@@ -1,128 +1,202 @@
-# IEEE BigData 2026 — Explainable Suicide Risk Detection
+# Lenormand — IEEE BigData Cup 2026
 
-基于 Reddit r/SuicideWatch 帖子、按 C-SSRS 临床量表标注的**可解释自杀风险检测**竞赛方案。当前实时榜 **第 6 名（共 11 队）**，已进入前 8 名（IEEE BigData 论文邀请门槛）。
+This archive contains the source code and report for Lenormand's submission to the Explainable Suicide Risk Detection Challenge. The final public leaderboard result was:
 
-> 高度敏感领域：本项目用于学术研究与风险识别，方法可靠性优先于单纯刷分。
+Official competition website: [Big Data Competition](https://www.bigdatacompetition.cn/)
 
----
+| Metric | Score |
+|---|---:|
+| Subtask 1 (risk + evidence) | 0.8052 |
+| Subtask 2 (24 factors) | 0.6636 |
+| Composite | 0.7627 |
+| Public leaderboard rank | 9 |
 
-## 任务概览
+The submitted system is **Heterogeneous Readout Decomposition (HRD)**. A card-conditioned Qwen3.8-27B verifier produces both answer-token margins and answer-position hidden states. Risk is compiled from four ordinal card records; most factors retain the token-margin decision, while seven development-selected labels use one shared latent probe; evidence is selected only from exact substrings of the post by a calibrated set decoder. The report in `report/` gives the method, validation protocol, ablations, and limitations.
 
-竞赛包含三个子任务，综合分 = `0.4·风险 + 0.3·证据 + 0.3·因子`：
+## Archive layout
 
-| 子任务 | 内容 | 指标 | 权重 |
-|---|---|---|---|
-| **1a** | 风险四分类（Indicator / Ideation / Behavior / Attempt，程度递进的有序分类） | Weighted F1 | 40% |
-| **1b** | 证据短语 span 抽取（verbatim，长度 ≤ gold 的 3 倍） | Phrase F1 | 30% |
-| **2** | 24 类因子多标签识别 | Macro F1 | 30% |
-
-- 截止：2026-08-31（代码 + 报告），评分 = 性能 30% + 创新 40% + 报告 30%。
-- 实时榜每天最多 3 次提交，**最终以隐藏测试集评测** → 以 OOF 为可靠代理选配置，不盲刷 public。
-
----
-
-## 当前方案与结果
-
-| 任务 | 模型方案 | OOF 分数 |
-|---|---|---|
-| 1a 风险分类 | **DepRoBERTa + RoBERTa 融合**（概率层加权 0.55 / 0.45） | Weighted F1 **0.8075** |
-| 1b 证据抽取 | **DepRoBERTa** BIO token 分类 + indicator 空证据规则 | Phrase F1 **≈ 0.82** |
-| 2 因子识别 | **DepRoBERTa** 24 头 sigmoid 多标签 + 逐类阈值校准 | Macro F1 **0.4585** |
-
-**Test 实时榜**：Subtask 1 = 0.7577，Subtask 2 = 0.4598，综合 = **0.6683**（第 6 名）。
-
-模型来源：
-- `rafalposwiata/deproberta-large-v1` — 领域专家，基于 r/depression + r/SuicideWatch 语料预训练，与赛题数据同源（LT-EDI-ACL2022 抑郁检测冠军方案 OPI 同款）。
-- `roberta-large` — 通用强基线。
-
-> 关键提分点：Subtask 2 的**逐类阈值校准**相比统一阈值 0.5 提升 +14.5 个百分点（救活 SORI、EOS 等稀有因子）；Subtask 1a 融合相比最强单模型提升 +0.68 个百分点（两模型互补，198 帖一错一救）。
-
----
-
-## 数据与预处理
-
-- 原始 `train.xlsx`：1635 帖 / 153 唯一用户（用户级时序数据）。
-- 预处理脚本 `data_preprocess/preprocess.py`（`SEED=42`，可复现），产物 `data/train_clean.csv`（1635 行 × 32 列）。
-
-修复的 4 项数据质量问题：
-1. **风险标签大小写/空格不一致** → `strip().lower()` 归一化为 4 类。
-2. **CV 必须按用户分组** → 否则同用户帖跨训练/验证集，OOF 虚高。采用 **StratifiedGroupKFold**（按 `anon_user_id` 分组 + 按 `risk_level` 分层，5 折），断言无用户跨折。
-3. **factors 字段重复标签**（812 行）→ `ast.literal_eval` + 去重 → 24 列 `f_*` 0/1 标签。
-4. **evidence 缺失**（5 行）→ `evidence_missing` 布尔列标记，不删除。
-
-> 三任务、所有模型**共用同一份 `train_clean.csv` 与同一套 fold 划分**，保证 OOF 对比公平、可复现。
-> 已知限制：极稀有因子（SORI 仅 8 正样本、EOS 仅 14）无法在各折均衡，OOF 方差较大，结论需谨慎解读。
-
----
-
-## 目录结构
-
-```
-.
+```text
+./
+├── README.md
+├── requirements.txt
+├── code/
+│   ├── notebooks/               # Colab entry points, ordered by stage
+│   ├── modules/                 # Python implementation
+│   ├── compose_submission.py    # joins Task-1 and Factor predictions safely
+│   ├── final_deployment.py      # applies the frozen B15.1 risk rule
+│   └── smoke_test.py            # environment and input-schema audit
 ├── data_preprocess/
-│   └── preprocess.py              # 数据清洗 + 固定 5-fold 划分
-├── data/
-│   ├── train.xlsx                 # 原始训练集
-│   ├── train_clean.csv            # 预处理产物（含 fold + 24 因子列）
-│   └── leaderboard.xlsx           # test 集（378 帖）
-├── version_lynn/v1/
-│   ├── common.py                  # 共享地基：数据加载 / fold / 评测 / 模型加载
-│   ├── task1a_Dep55_Roberta45/    # task1a 五折训练 + 融合分析
-│   ├── task1b_train.ipynb         # task1b BIO 证据抽取
-│   ├── task2_train.ipynb          # task2 多标签训练 + 阈值校准
-│   ├── make_submission.ipynb      # 全量训练 + 预测 test + 生成提交 csv
-│   └── results/                   # OOF 概率缓存(.npz)、分数汇总(.csv)、混淆矩阵
-├── technical_report/              # 启动文档、数据预处理记录、负结果记录
-├── dev_record/                    # 每日进展记录
-└── reference/                     # 相关论文 PDF
+│   └── preprocess.py            # optional cleaning and five-fold diagnostic split
+├── docs/
+│   └── ARTIFACT_MAP.md          # inputs/outputs and frozen artifact lineage
+├── previous_trial/                   # archived pre-HRD experiments; not used by the final pipeline
+└── report/
+    ├── Lenormand_IEEE_BigData2026_Report.pdf
+    ├── main.tex
+    ├── references.bib
+    └── figures/
 ```
 
----
+The competition data, Hugging Face model files, trained adapters, intermediate hidden-state caches, and test predictions are intentionally excluded. They are either distributed under the organizer's data-use terms, reproducible from the code, or too large for a source-code archive.
 
-## 复现流程
+## Hardware and tested environment
+
+The full pipeline was developed in Google Colab Pro using an NVIDIA A100 80 GB GPU. The 27B verifier is loaded in 4-bit and its QLoRA adapters are trained separately by task. A fresh three-fold reproduction requires substantial GPU time (approximately 30–50 A100 GPU-hours, depending on cache hits and kernel availability). Every expensive notebook writes fold- or chunk-level checkpoints to Google Drive and can be resumed after a disconnection.
+
+The final environment used Python 3.13, PyTorch 2.11.0+cu128, Transformers 5.15.0, and scikit-learn 1.7.2. The exact meta-decoder requires scikit-learn 1.7.2. The Qwen3.8 runs were tested with `causal-conv1d`, `flash-linear-attention`, and the Hugging Face kernels FlashAttention-2 fallback. Training cells explicitly audit the active kernels before a long run.
+
+## Data placement
+
+Obtain the official files from the challenge organizers and use these names:
+
+```text
+IEEE_BigData2026/
+├── train.xlsx
+├── leaderboard.xlsx
+└── (the Python modules from code/modules/)
+```
+
+`train.xlsx` must contain the official post, user, risk, evidence, and factor annotations. `leaderboard.xlsx` must contain the official test row IDs and posts. The loaders accept both the organizer's original factor representation and the cleaned `f_<label>` columns used in our diagnostics. Do not rename row IDs or reorder rows.
+
+### Optional preprocessing audit
+
+The final HRD notebooks read the official `train.xlsx` directly and construct their own three user-grouped outer folds. `data_preprocess/preprocess.py` is retained as a standalone data-quality audit for the earlier five-fold experiments; it is **not** a prerequisite for the 14-stage reproduction below.
+
+Run it from the directory where you want `train_clean.csv` to be written:
 
 ```bash
-# 1. 数据预处理（依赖缺失会自动 pip 安装）
 cd data_preprocess
-python3 preprocess.py path/to/train.xlsx   # 产出 train_clean.csv
-
-# 2. 各子任务五折训练 + OOF 评估（Jupyter）
-#    version_lynn/v1/ 下的 task1a / task1b / task2 notebook
-#    OOF 概率与阈值缓存到 results/*.npz
-
-# 3. 生成提交：全量 train 重训 → 预测 test → 按官方格式生成 csv
-#    version_lynn/v1/make_submission.ipynb
-#    融合权重、task2 逐类阈值均沿用 OOF 上确定的配置
+python preprocess.py /absolute/path/to/train.xlsx
 ```
 
----
+The script normalizes the four risk labels, parses and de-duplicates the 24 factor labels, marks missing evidence without dropping rows, creates a seeded five-fold `StratifiedGroupKFold` split grouped by `anon_user_id`, and asserts that no user crosses folds. Its input expects the organizer columns `row_id`, `anon_user_id`, `post_id`, `post`, `suicide risk`, `evidence for suicide risk level`, and `factors`.
 
-## 方法论原则（NLPCC 验证有效，已迁移）
+## Fast setup: Google Colab
 
-- **5-fold CV + OOF 评估**：固定 fold，所有模型共用，公平对比。
-- **只信 OOF、不盲刷 public**：隐藏集最终评 + 每天限 3 次提交，OOF 是制胜关键。
-- **逐类阈值校准**：task1a（针对 Weighted F1 重搜，**不照搬** Macro 系数）+ task2（multi-label 逐类）。
-- **混淆矩阵驱动错误分析**：定位相邻风险等级的混淆模式。
-- **互补性验证后再融合**：理论互补 ≠ 实际涨分，融合/校准改动一律 OOF 验证。
-- **负结果也是成果**：系统记录被否决的方法（见下），体现工作彻底性，报告加分。
+1. Create `/content/drive/MyDrive/IEEE_BigData2026/` in Google Drive.
+2. Place the official `train.xlsx` and `leaderboard.xlsx` there.
+3. Copy every file from `code/modules/` into that Drive directory.
+4. Add `HF_TOKEN` as a Colab secret. All referenced models are downloaded from Hugging Face at run time.
+5. Open the notebooks from `code/notebooks/` and run them in the order listed below. Their default `ROOT` is already `/content/drive/MyDrive/IEEE_BigData2026`.
+6. Use an A100 80 GB runtime for every notebook marked GPU. Keep the generated `results/` directory between sessions.
 
----
+The first installation cell may require a runtime restart. After restarting, rerun the setup and import cells; existing adapters, logits, prompts, semantic caches, and hidden-state chunks are detected automatically.
 
-## 已记录的关键决策与负结果
+## Linux setup
 
-详见 `technical_report/`：
+Ubuntu 22.04/24.04 with an NVIDIA CUDA GPU is recommended.
 
-- **模型选型三轮演化**：`MentalRoBERTa`（门控仓库受阻）→ `DepRoBERTa`；移除 `BERTweet`（max_len=128，实测 45% 长帖证据、10.6% 帖关键证据落在 128 token 后，截断不可接受）。
-- **放弃 DeBERTa-v3-large（负结果）**：排查并修复六类技术故障后训练仍退化到多数类（Weighted F1 锁死 0.2024），判定该模型 + 本数据 + 环境组合不收敛，改用 RoBERTa-large。详见 `DeBERTa排查记录_负结果.md`。
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip wheel setuptools
 
----
+# Install the CUDA build of PyTorch appropriate for the host first.
+# See https://pytorch.org/get-started/locally/
+python -m pip install -r requirements.txt
 
-## 下一步方向
+# Optional but strongly recommended for Qwen3.8 throughput:
+python -m pip install -U "flash-linear-attention[cuda]"
+python -m pip install -U causal-conv1d --no-build-isolation
 
-Subtask 1 已接近头部（榜内第 4 高），**Subtask 2 是明显短板**（0.46 vs 头部 0.55~0.61），是拉开差距的主因。优先级：
+python code/smoke_test.py --root /absolute/path/to/IEEE_BigData2026
+jupyter lab
+```
 
-1. **task2 融合**：加入 RoBERTa 一起概率层融合（参考 task1a 涨分经验）。
-2. **稀有类处理**：对 F1≈0 的稀有因子用加权 BCE / focal loss / 过采样。
-3. **调超参 / 增训练轮数**。
+Copy `code/modules/*.py` into the selected `IEEE_BigData2026` directory, or add `code/modules` to `PYTHONPATH`. In each notebook's first configuration cell, replace the Colab `ROOT` with the absolute Linux path. The computation itself is platform-neutral; Colab-only `drive.mount` and `files.download` lines may be skipped.
 
-> 性价比测算：task2 从 0.46 → 0.55，综合分 +0.027 → 约 0.695，可冲第 3-4 名；task1 边际收益仅约 +0.01。
+### Quick verification
+
+The smoke test has two useful modes:
+
+```bash
+# Check installed package versions and CUDA visibility only.
+python code/smoke_test.py
+
+# Also check train/test schemas and import the copied solution modules.
+python code/smoke_test.py --root /absolute/path/to/IEEE_BigData2026
+```
+
+The second form expects `train.xlsx`, `leaderboard.xlsx`, and the files copied from `code/modules/` to be directly inside the supplied root. It validates the environment and schema only; it does not train a model or reproduce leaderboard scores.
+
+## Windows setup
+
+The supported Windows route is **Windows 11 + WSL2 Ubuntu + NVIDIA CUDA for WSL**. Native Windows and CPU-only execution were not validated and are not practical for the 27B stages.
+
+1. Install WSL2 and an Ubuntu distribution.
+2. Confirm `nvidia-smi` works inside WSL.
+3. Follow the Linux commands above inside WSL.
+4. Keep the project in the WSL filesystem (for example `/home/user/IEEE_BigData2026`) rather than a mounted NTFS directory during training.
+5. Change the notebook `ROOT` to that WSL path.
+
+## Reproduction order
+
+The notebooks are numbered to make data and artifact dependencies explicit:
+
+1. `01_qwen3_14b_factor_oof.ipynb` — trains the shared 14B factor verifier used in the factor anchor.
+2. `02_qwen38_factor_oof.ipynb` — trains and scores the three Full64 27B factor adapters.
+3. `03_task1_fold0.ipynb` — trains the Fold-0 risk/evidence verifier and ModernBERT span proposer.
+4. `04_evidence_meta_fold0.ipynb` — develops the exact-span candidate meta-decoder.
+5. `05_task1_outer12.ipynb` — frozen Fold-1/Fold-2 confirmation and evidence OOF artifacts.
+6. `05a_evidence_environment_audit.ipynb` — CPU-only sklearn 1.7.2 reproducibility audit of the now-frozen evidence meta-model. It intentionally runs after Stage 5 because it consumes those artifacts.
+7. `06_base_test_inference.ipynb` — refits the evidence meta-model on OOF rows and runs the base three-fold test ensemble.
+8. `07_task1_probe_diagnostics.ipynb` — metric-aligned evidence and factor deployment diagnostics used before latent routing.
+9. `08_risk_latent_development.ipynb` — Fold-0 B15 latent readout development.
+10. `09_risk_latent_confirmation.ipynb` — locked Fold-1/Fold-2 B15.1 confirmation.
+11. `10_risk_latent_test.ipynb` — three-fold B15.1 test readout.
+12. `11_factor_latent_development.ipynb` — Fold-0 B16 factor latent gate.
+13. `12_factor_latent_confirmation.ipynb` — locked B16.1 seven-label confirmation.
+14. `13_factor_latent_test.ipynb` — B16.1 three-fold test deployment and final factor CSV.
+
+The public submission used the B16.1 factor output and the conservative B15.1 risk deployment. For the final risk boundary, a change was accepted only under exact three-of-three fold agreement and a frozen margin rule; no public test labels were used to fit the probes or thresholds. Apply that frozen rule after stages 10 and 13:
+
+```bash
+python code/final_deployment.py \
+  --base /path/to/B16.1/Lenormand.csv \
+  --latent /path/to/B151_TEST_ENSEMBLE_PROBABILITIES.npz \
+  --output /path/to/final/Lenormand.csv
+```
+
+With the frozen competition artifacts and official test order, this command reproduces the submitted CSV byte-for-byte (SHA-256 `ebbd892be237abbafbd25e6a6f753f6dcdee1733f644f732e5c10218293c343b`). The CSV itself is not redistributed in this source package.
+
+See `docs/ARTIFACT_MAP.md` for the concrete Drive paths consumed and produced at each stage.
+
+## Building the final CSV
+
+Once Task-1 and factor notebooks have produced aligned CSV files:
+
+```bash
+python code/compose_submission.py \
+  --test /absolute/path/to/leaderboard.xlsx \
+  --task1 /absolute/path/to/task1_predictions.csv \
+  --factors /absolute/path/to/factor_predictions.csv \
+  --output /absolute/path/to/Lenormand.csv
+```
+
+The utility preserves official test order, validates the four risk labels, checks that factors are legal list values, verifies evidence is copied verbatim from the post, and prints the SHA-256 checksum. The expected output columns are exactly:
+
+```text
+row_id,risk_level,evidence,factors
+```
+
+`compose_submission.py` also blanks evidence for `Indicator` rows. It accepts CSV or Excel input tables, aligns both prediction files by `row_id` rather than their current row order, and rejects duplicate or missing IDs. Run `final_deployment.py` afterward only when the B15.1 probability archive is available and you intend to apply the frozen conservative risk adjustment.
+
+## Report sources
+
+The submitted PDF is available at `report/Lenormand_IEEE_BigData2026_Report.pdf`. Its editable sources are `report/main.tex`, `report/references.bib`, and `report/figures/`. `report/make_figures.py` regenerates the two architecture/protocol figures in both PDF and PNG formats; running it overwrites those four figure files.
+
+## Models downloaded at run time
+
+- `Qwen/Qwen3.8-27B` — Full64 task adapters and latent readouts.
+- `Qwen/Qwen3-14B` — shared factor verifier in the anchor ensemble.
+- `Qwen/Qwen3-30B-A3B-Instruct-2507` — screened anchor component; retained in the original B4-P experiment but not relied on as the final decision rule.
+- `answerdotai/ModernBERT-base` — token-level evidence proposal.
+- `intfloat/e5-large-v2` — fold-safe retrieval features.
+
+Users are responsible for complying with the data and model licenses. The system is a research benchmark submission, not a clinical diagnostic or intervention tool.
+
+## Authors
+
+- Zirui Li — `25044237g@connect.polyu.hk`
+- Yanling Li — `lynnn.li@connect.polyu.hk`
+- Kaolanglang Gao — `2510032049@mails.szu.edu.cn`
